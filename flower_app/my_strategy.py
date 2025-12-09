@@ -1,3 +1,5 @@
+"""Custom FedAvg strategy for Bearing Fault Detection with checkpointing and logging."""
+
 import json
 from datetime import datetime
 
@@ -14,6 +16,8 @@ class CustomFedAvg(FedAvg):
     """A strategy that keeps the core functionality of FedAvg unchanged but enables
     additional features such as: Saving global checkpoints, saving metrics to the local
     file system as a JSON, pushing metrics to Weight & Biases.
+    
+    Adapted for Bearing Fault Detection (8-class multiclass classification).
     """
 
     def __init__(self, *args, **kwargs):
@@ -24,7 +28,16 @@ class CustomFedAvg(FedAvg):
 
         # Log those same metrics to W&B
         name = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-        wandb.init(project="flower-simulation-tutorial", name=f"custom-strategy-{name}")
+        wandb.init(
+            project="bearing-fault-detection-fl",
+            name=f"federated-bearing-{name}",
+            config={
+                "model": "Multiclass Logistic Regression",
+                "num_classes": 8,
+                "num_features": 4,
+                "task": "Bearing Fault Detection"
+            }
+        )
 
     def aggregate_fit(
         self,

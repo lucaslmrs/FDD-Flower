@@ -3,15 +3,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "my-awesome-app"
+name = "bearing-fault-detection-fl"
 version = "1.0.0"
-description = ""
+description = "Federated Learning for Bearing Fault Detection using Flower"
 license = "Apache-2.0"
 dependencies = [
     "flwr[simulation]>=1.24.0",
-    "flwr-datasets[vision]>=0.5.0",
     "torch==2.6.0",
-    "torchvision==0.21.0",
+    "scipy>=1.10.0",
+    "numpy>=1.24.0",
     "wandb",
 ]
 
@@ -19,16 +19,17 @@ dependencies = [
 packages = ["."]
 
 [tool.flwr.app]
-publisher = "javier"
+publisher = "rluca"
 
 [tool.flwr.app.components]
 serverapp = "flower_app.server_app:app"
 clientapp = "flower_app.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 10
+num-server-rounds = 100
 fraction-fit = 0.5
-local-epochs = 1
+local-epochs = 10
+dirichlet-alpha = 0.1
 
 [tool.flwr.federations]
 default = "local-simulation"

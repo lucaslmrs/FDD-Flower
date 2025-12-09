@@ -1,15 +1,13 @@
-"""my-awesome-app: A Flower / PyTorch app."""
+"""Flower Server App for Bearing Fault Detection using Federated Learning."""
 
 import json
 from typing import List, Tuple
 
-from datasets import load_dataset
 from flwr.common import Context, Metrics, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
-from torch.utils.data import DataLoader
 
 from flower_app.my_strategy import CustomFedAvg
-from flower_app.task import Net, get_transforms, get_weights, set_weights, test
+from flower_app.task import Net, get_weights, load_test_data, set_weights, test
 
 
 def get_evaluate_fn(testloader, device):
@@ -75,10 +73,8 @@ def server_fn(context: Context):
     ndarrays = get_weights(Net())
     parameters = ndarrays_to_parameters(ndarrays)
 
-    # Load global test set
-    testset = load_dataset("zalando-datasets/fashion_mnist")["test"]
-    # Construct dataloader
-    testloader = DataLoader(testset.with_transform(get_transforms()), batch_size=32)
+    # Load global test set (bearing fault detection data)
+    testloader = load_test_data()
 
     # Define strategy
     strategy = CustomFedAvg(

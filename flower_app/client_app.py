@@ -1,4 +1,4 @@
-"""my-awesome-app: A Flower / PyTorch app."""
+"""Flower Client App for Bearing Fault Detection using Federated Learning."""
 
 import json
 from random import random

@@ -10,13 +10,13 @@ from flower_app.my_strategy import CustomFedAvg
 from flower_app.task import Net, get_weights, load_test_data, set_weights, test
 
 
-def get_evaluate_fn(testloader, device):
+def get_evaluate_fn(testloader, device, num_features, num_classes):
     """Return a callback that evaluates the global model."""
 
     def evaluate(server_round, parameters_ndarrays, config):
         """Evaluate global model using provided centralised testset."""
         # Instantiate model
-        net = Net()
+        net = Net(num_features=num_features, num_classes=num_classes)
         # Apply global_model parameters
         set_weights(net, parameters_ndarrays)
         net.to(device)
@@ -68,9 +68,11 @@ def server_fn(context: Context):
     # Read from Run config
     num_rounds = context.run_config["num-server-rounds"]
     fraction_fit = context.run_config["fraction-fit"]
+    num_classes = context.run_config["num-classes"]
+    num_features = context.run_config["num-features"]
 
     # Initialize model parameters
-    ndarrays = get_weights(Net())
+    ndarrays = get_weights(Net(num_features=num_features, num_classes=num_classes))
     parameters = ndarrays_to_parameters(ndarrays)
 
     # Load global test set (bearing fault detection data)
@@ -85,7 +87,7 @@ def server_fn(context: Context):
         evaluate_metrics_aggregation_fn=weighted_average,
         fit_metrics_aggregation_fn=handle_fit_metrics,
         on_fit_config_fn=on_fit_config,
-        evaluate_fn=get_evaluate_fn(testloader, device="cpu"),
+        evaluate_fn=get_evaluate_fn(testloader, device="cpu", num_features=num_features, num_classes=num_classes),
     )
     config = ServerConfig(num_rounds=num_rounds)
 

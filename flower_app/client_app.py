@@ -79,15 +79,22 @@ class FlowerClient(NumPyClient):
 def client_fn(context: Context):
     """A function that returns a Client."""
 
-    # Instantiate the model
-    net = Net()
+    # Read the run config (defined in the `pyproject.toml`)
+    local_epochs = context.run_config["local-epochs"]
+    dirichlet_alpha = context.run_config["dirichlet-alpha"]
+    sampling_rate = context.run_config["sampling-rate"]
+    num_classes = context.run_config["num-classes"]
+    num_features = context.run_config["num-features"]
+
+    # Instantiate the model with config parameters
+    net = Net(num_features=num_features, num_classes=num_classes)
+    
     # Read node config and fetch data for the ClientApp that is being constructed
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    trainloader, valloader = load_data(partition_id, num_partitions)
-
-    # Read the run config (defined in the `pyproject.toml`)
-    local_epochs = context.run_config["local-epochs"]
+    trainloader, valloader = load_data(
+        partition_id, num_partitions, alpha=dirichlet_alpha, sampling_rate=sampling_rate
+    )
 
     # Return Client instance
     return FlowerClient(net, trainloader, valloader, local_epochs, context).to_client()

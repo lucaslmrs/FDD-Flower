@@ -30,6 +30,9 @@ num-server-rounds = 100
 fraction-fit = 0.5
 local-epochs = 10
 dirichlet-alpha = 0.1
+sampling-rate = 50000
+num-classes = 8
+num-features = 4
 
 [tool.flwr.federations]
 default = "local-simulation"

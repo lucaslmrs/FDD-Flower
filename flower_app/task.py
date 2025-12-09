@@ -12,23 +12,17 @@ from scipy.signal import hilbert
 from torch.utils.data import DataLoader, TensorDataset
 
 # =============================================================================
-# Configuration
+# Configuration (default values - can be overridden via pyproject.toml)
 # =============================================================================
 
 # Path to dataset (fixed path)
 DATA_PATH = Path(__file__).parent.parent / "downloads" / "dataset_for_team"
 
-# System parameters
-FS = 50000  # Sampling rate (Hz)
-
-# Number of classes (8 fault types)
-NUM_CLASSES = 8
-
-# Number of input features (4 harmonics)
-NUM_FEATURES = 4
-
-# Dirichlet alpha for partitioning (configurable)
-DIRICHLET_ALPHA = 1.0
+# System parameters (defaults)
+FS = 50000  # Sampling rate (Hz) - configurable via 'sampling-rate'
+NUM_CLASSES = 8  # Number of classes - configurable via 'num-classes'
+NUM_FEATURES = 4  # Number of input features - configurable via 'num-features'
+DIRICHLET_ALPHA = 1.0  # Dirichlet alpha - configurable via 'dirichlet-alpha'
 
 
 # =============================================================================
@@ -38,8 +32,10 @@ DIRICHLET_ALPHA = 1.0
 class Net(nn.Module):
     """Multiclass Logistic Regression model for bearing fault detection."""
 
-    def __init__(self, num_features: int = NUM_FEATURES, num_classes: int = NUM_CLASSES):
+    def __init__(self, num_features: int = None, num_classes: int = None):
         super(Net, self).__init__()
+        num_features = num_features if num_features is not None else NUM_FEATURES
+        num_classes = num_classes if num_classes is not None else NUM_CLASSES
         self.linear = nn.Linear(num_features, num_classes)
 
     def forward(self, x):
@@ -50,15 +46,18 @@ class Net(nn.Module):
 # Feature Extraction Functions
 # =============================================================================
 
-def extract_features_single(signal: np.ndarray) -> np.ndarray:
+def extract_features_single(signal: np.ndarray, sampling_rate: int = None) -> np.ndarray:
     """Extract features from a single vibration signal using Hilbert Transform + FFT.
     
     Args:
         signal: 1D numpy array with vibration data
+        sampling_rate: Sampling rate in Hz (uses FS default if not provided)
         
     Returns:
         1D numpy array with 4 harmonic features
     """
+    fs = sampling_rate if sampling_rate is not None else FS
+    
     # Apply Hilbert transform to get envelope
     envelope = np.abs(hilbert(signal))
     
@@ -73,9 +72,9 @@ def extract_features_single(signal: np.ndarray) -> np.ndarray:
     fft_positive = fft_result[:n_points]
     
     # Calculate frequency vector
-    T_total = n_points * 2 / FS
+    T_total = n_points * 2 / fs
     d_f = 1 / T_total
-    frequency_vector = np.arange(0, FS - d_f, d_f)
+    frequency_vector = np.arange(0, fs - d_f, d_f)
     
     # Ensure frequency_vector matches fft_positive length
     if len(frequency_vector) > len(fft_positive):
@@ -104,18 +103,19 @@ def extract_features_single(signal: np.ndarray) -> np.ndarray:
     return np.array(features, dtype=np.float32)
 
 
-def extract_features_batch(signals: np.ndarray) -> np.ndarray:
+def extract_features_batch(signals: np.ndarray, sampling_rate: int = None) -> np.ndarray:
     """Extract features from multiple signals.
     
     Args:
         signals: 2D numpy array (n_samples, signal_length)
+        sampling_rate: Sampling rate in Hz (uses FS default if not provided)
         
     Returns:
         2D numpy array (n_samples, n_features)
     """
     features = []
     for i in range(signals.shape[0]):
-        features.append(extract_features_single(signals[i]))
+        features.append(extract_features_single(signals[i], sampling_rate))
     return np.array(features)
 
 
@@ -233,18 +233,20 @@ def _dirichlet_partition(labels: np.ndarray, num_partitions: int, alpha: float, 
 _partition_cache = None
 
 
-def load_data(partition_id: int, num_partitions: int, alpha: float = DIRICHLET_ALPHA):
+def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampling_rate: int = None):
     """Load partitioned bearing fault data for a specific client.
     
     Args:
         partition_id: ID of the partition/client (0 to num_partitions-1)
         num_partitions: Total number of partitions
         alpha: Dirichlet alpha parameter for non-IID partitioning
+        sampling_rate: Sampling rate in Hz for feature extraction
         
     Returns:
         Tuple of (trainloader, testloader)
     """
     global _partition_cache
+    alpha = alpha if alpha is not None else DIRICHLET_ALPHA
     
     # Load data
     data = _load_mat_data()

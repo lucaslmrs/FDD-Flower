@@ -231,6 +231,7 @@ def _dirichlet_partition(labels: np.ndarray, num_partitions: int, alpha: float, 
 
 # Cache for partitioned indices
 _partition_cache = None
+_visualization_done = False
 
 
 def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampling_rate: int = None):
@@ -245,7 +246,7 @@ def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampl
     Returns:
         Tuple of (trainloader, testloader)
     """
-    global _partition_cache
+    global _partition_cache, _visualization_done
     alpha = alpha if alpha is not None else DIRICHLET_ALPHA
     
     # Load data
@@ -262,6 +263,18 @@ def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampl
             'num_partitions': num_partitions,
             'indices': partition_indices
         }
+        _visualization_done = False  # Reset visualization flag for new partitioning
+    
+    # Generate visualization plot (only once per partitioning)
+    if not _visualization_done:
+        from .visualization import plot_class_distribution
+        plot_class_distribution(
+            partition_indices=_partition_cache['indices'],
+            labels=labels_train,
+            num_classes=NUM_CLASSES,
+            save_path="artifacts/class_distribution.png",
+        )
+        _visualization_done = True
     
     # Get indices for this partition
     indices = _partition_cache['indices'][partition_id]

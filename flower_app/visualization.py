@@ -44,7 +44,7 @@ def plot_class_distribution(
         distribution,
         annot=True,
         fmt="d",
-        cmap="YlOrRd",
+        cmap="Blues",
         xticklabels=[f"Class {i}" for i in range(num_classes)],
         yticklabels=[f"Client {i}" for i in range(num_partitions)],
         ax=ax1,
@@ -66,7 +66,7 @@ def plot_class_distribution(
     x = np.arange(num_partitions)
     bottom = np.zeros(num_partitions)
     
-    colors = sns.color_palette("husl", num_classes)
+    colors = sns.color_palette("Blues_r", num_classes)
     
     for class_id in range(num_classes):
         values = distribution[:, class_id]

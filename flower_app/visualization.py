@@ -11,8 +11,9 @@ def plot_class_distribution(
     partition_indices: list,
     labels: np.ndarray,
     num_classes: int = 8,
-    save_path: str = "artifacts/class_distribution.png",
-    figsize: tuple = (12, 8),
+    save_dir: str = "artifacts",
+    figsize_heatmap: tuple = (10, 8),
+    figsize_bar: tuple = (12, 8),
 ):
     """Plot the class distribution across federated learning participants.
     
@@ -20,8 +21,9 @@ def plot_class_distribution(
         partition_indices: List of index arrays, one per partition/client
         labels: Array of labels for each sample
         num_classes: Number of classes in the dataset
-        save_path: Path to save the plot
-        figsize: Figure size (width, height)
+        save_dir: Directory to save the plots
+        figsize_heatmap: Figure size for heatmap (width, height)
+        figsize_bar: Figure size for bar chart (width, height)
     """
     num_partitions = len(partition_indices)
     
@@ -33,11 +35,11 @@ def plot_class_distribution(
             label = labels[idx]
             distribution[client_id, label] += 1
     
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    # Ensure directory exists
+    os.makedirs(save_dir, exist_ok=True)
     
     # Plot 1: Heatmap of class distribution
-    ax1 = axes[0]
+    fig1, ax1 = plt.subplots(figsize=figsize_heatmap)
     sns.heatmap(
         distribution,
         annot=True,
@@ -48,12 +50,19 @@ def plot_class_distribution(
         ax=ax1,
         cbar_kws={"label": "Number of Samples"},
     )
-    ax1.set_title("Class Distribution per Client (Heatmap)", fontsize=12, fontweight="bold")
-    ax1.set_xlabel("Fault Class", fontsize=10)
-    ax1.set_ylabel("Federated Client", fontsize=10)
+    ax1.set_title("Class Distribution per Client - Heatmap", fontsize=14, fontweight="bold", pad=15)
+    ax1.set_xlabel("Fault Class", fontsize=11)
+    ax1.set_ylabel("Federated Client", fontsize=11)
+    
+    plt.tight_layout()
+    heatmap_path = os.path.join(save_dir, "class_distribution_heatmap.png")
+    plt.savefig(heatmap_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    
+    print(f"Heatmap saved to: {heatmap_path}")
     
     # Plot 2: Stacked bar chart
-    ax2 = axes[1]
+    fig2, ax2 = plt.subplots(figsize=figsize_bar)
     x = np.arange(num_partitions)
     bottom = np.zeros(num_partitions)
     
@@ -64,24 +73,20 @@ def plot_class_distribution(
         ax2.bar(x, values, bottom=bottom, label=f"Class {class_id}", color=colors[class_id])
         bottom += values
     
-    ax2.set_title("Class Distribution per Client (Stacked Bar)", fontsize=12, fontweight="bold")
-    ax2.set_xlabel("Federated Client", fontsize=10)
-    ax2.set_ylabel("Number of Samples", fontsize=10)
+    ax2.set_title("Class Distribution per Client - Stacked Bar Chart", fontsize=14, fontweight="bold", pad=15)
+    ax2.set_xlabel("Federated Client", fontsize=11)
+    ax2.set_ylabel("Number of Samples", fontsize=11)
     ax2.set_xticks(x)
     ax2.set_xticklabels([f"Client {i}" for i in range(num_partitions)])
-    ax2.legend(title="Fault Class", bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    ax2.legend(title="Fault Class", bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9)
+    ax2.grid(axis='y', alpha=0.3, linestyle='--')
     
-    plt.suptitle("Federated Learning Data Distribution - Bearing Fault Detection", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
-    
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    
-    # Save figure
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    bar_path = os.path.join(save_dir, "class_distribution_bar.png")
+    plt.savefig(bar_path, dpi=150, bbox_inches="tight")
     plt.close()
     
-    print(f"Class distribution plot saved to: {save_path}")
+    print(f"Bar chart saved to: {bar_path}")
     
     # Print summary statistics
     print("\n=== Distribution Summary ===")

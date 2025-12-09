@@ -272,7 +272,7 @@ def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampl
             partition_indices=_partition_cache['indices'],
             labels=labels_train,
             num_classes=NUM_CLASSES,
-            save_path="artifacts/class_distribution.png",
+            save_dir="artifacts",
         )
         _visualization_done = True
     

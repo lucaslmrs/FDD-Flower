@@ -1,6 +1,7 @@
 """Custom FedAvg strategy for Bearing Fault Detection with checkpointing and logging."""
 
 import json
+import os
 from datetime import datetime
 
 import torch
@@ -60,7 +61,8 @@ class CustomFedAvg(FedAvg):
         # Apply paramters to model
         set_weights(model, ndarrays)
         # Save global model in the standard PyTorch way
-        torch.save(model.state_dict(), f"global_model_round_{server_round}")
+        os.makedirs("artifacts", exist_ok=True)
+        torch.save(model.state_dict(), f"artifacts/global_model_round_{server_round}")
 
         # Return the expected outputs for `aggregate_fit`
         return parameters_aggregated, metrics_aggregated

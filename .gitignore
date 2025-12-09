@@ -164,3 +164,4 @@ local_models*
 
 results*
 wandb*
+artifacts/*

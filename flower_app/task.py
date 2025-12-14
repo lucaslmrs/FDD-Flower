@@ -26,20 +26,76 @@ DIRICHLET_ALPHA = 1.0  # Dirichlet alpha - configurable via 'dirichlet-alpha'
 
 
 # =============================================================================
-# Model Definition - Multiclass Logistic Regression in PyTorch
+# Model Definition - Neural Network for Bearing Fault Detection
 # =============================================================================
 
-class Net(nn.Module):
-    """Multiclass Logistic Regression model for bearing fault detection."""
+# Neural Network Architecture Configuration
+HIDDEN_LAYERS = [64, 32]  # Hidden layer sizes
+DROPOUT_RATE = 0.3  # Dropout rate for regularization
+USE_BATCH_NORM = True  # Whether to use batch normalization
 
-    def __init__(self, num_features: int = None, num_classes: int = None):
+
+class Net(nn.Module):
+    """Neural Network model for bearing fault detection.
+    
+    Architecture:
+        - Input layer: num_features
+        - Hidden layers: configurable via HIDDEN_LAYERS
+        - Batch normalization (optional): after each hidden layer
+        - Dropout: for regularization
+        - Output layer: num_classes (softmax applied during loss calculation)
+    """
+
+    def __init__(self, num_features: int = None, num_classes: int = None,
+                 hidden_layers: list = None, dropout_rate: float = None,
+                 use_batch_norm: bool = None):
         super(Net, self).__init__()
+        
+        # Use defaults if not provided
         num_features = num_features if num_features is not None else NUM_FEATURES
         num_classes = num_classes if num_classes is not None else NUM_CLASSES
-        self.linear = nn.Linear(num_features, num_classes)
+        hidden_layers = hidden_layers if hidden_layers is not None else HIDDEN_LAYERS
+        dropout_rate = dropout_rate if dropout_rate is not None else DROPOUT_RATE
+        use_batch_norm = use_batch_norm if use_batch_norm is not None else USE_BATCH_NORM
+        
+        # Build network layers
+        layers = []
+        in_features = num_features
+        
+        for hidden_size in hidden_layers:
+            # Linear layer
+            layers.append(nn.Linear(in_features, hidden_size))
+            
+            # Batch normalization (optional)
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_size))
+            
+            # Activation function
+            layers.append(nn.ReLU())
+            
+            # Dropout for regularization
+            layers.append(nn.Dropout(dropout_rate))
+            
+            in_features = hidden_size
+        
+        # Output layer
+        layers.append(nn.Linear(in_features, num_classes))
+        
+        # Create sequential model
+        self.network = nn.Sequential(*layers)
+        
+        # Store configuration for reference
+        self.num_features = num_features
+        self.num_classes = num_classes
+        self.hidden_layers = hidden_layers
 
     def forward(self, x):
-        return self.linear(x)
+        return self.network(x)
+    
+    def __repr__(self):
+        return (f"Net(num_features={self.num_features}, "
+                f"num_classes={self.num_classes}, "
+                f"hidden_layers={self.hidden_layers})")
 
 
 # =============================================================================

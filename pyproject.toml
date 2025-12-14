@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "bearing-fault-detection-fl"
+name = "bearing-fault-detection-fl-NN"
 version = "1.0.0"
 description = "Federated Learning for Bearing Fault Detection using Flower"
 license = "Apache-2.0"

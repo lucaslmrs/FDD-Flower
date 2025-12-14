@@ -4,7 +4,8 @@ Federated Learning application for bearing fault detection using Flower and PyTo
 
 ## Features
 
-- 8-class bearing fault classification using multiclass logistic regression
+- 8-class bearing fault classification using neural network
+- Configurable hidden layers with batch normalization and dropout
 - Non-IID data partitioning with Dirichlet distribution
 - Automated class distribution visualization
 - W&B integration for experiment tracking

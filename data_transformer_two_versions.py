@@ -1,6 +1,22 @@
 import pandas as pd
 from pathlib import Path
 
+# =============================================================================
+# CONFIGURAÇÕES MANUAIS - ALTERE AQUI
+# =============================================================================
+
+# Nome do arquivo CSV a ser processado (deve estar na pasta 'data')
+CSV_FILE_NAME = "cenario14.csv"  # TODO: Altere para o nome do arquivo desejado
+
+# Identificador do cliente/cenário
+CLIENT_ID = "B"  # TODO: Altere para o ID do cliente correspondente
+
+# Flag indicando se este cenário contém falhas
+HAS_FAULT = 1  # TODO: Altere para True se o cenário contém falhas
+
+# =============================================================================
+
+
 def load_tag_config(config_path):
     """
     Carrega o arquivo de configuração de tags e cria um mapeamento
@@ -85,9 +101,15 @@ def transform_data_to_ml_format(csv_path, config_path, use_forward_fill=True, ou
     numeric_cols = df_pivot.select_dtypes(include=['float64', 'int64']).columns
     df_pivot[numeric_cols] = df_pivot[numeric_cols].round(5)
     
+    # Adiciona metadados do cliente e falhas
+    df_pivot['client_id'] = CLIENT_ID
+    df_pivot['has_fault'] = int(HAS_FAULT)
+    
     print(f"\nDataset transformado:")
     print(f"  - Linhas (timestamps): {len(df_pivot)}")
     print(f"  - Colunas (variáveis + timestamp): {len(df_pivot.columns)}")
+    print(f"  - Client ID: {CLIENT_ID}")
+    print(f"  - Tem falha: {HAS_FAULT}")
     
     if not use_forward_fill:
         null_counts = df_pivot.isnull().sum()
@@ -114,16 +136,15 @@ def transform_data_to_ml_format(csv_path, config_path, use_forward_fill=True, ou
 
 if __name__ == "__main__":
 
-    file_name = "cenario1.csv"
     # Caminhos dos arquivos
     base_path = Path(__file__).parent
-    csv_path = base_path / "downloads/data" / file_name
-    config_path = base_path / "downloads/data" / "tagconfig.txt"
+    csv_path = base_path / "data" / CSV_FILE_NAME
+    config_path = base_path / "data" / "tagconfig.txt"
     
     print("="*60)
     print("VERSÃO 1: COM FORWARD FILL")
     print("="*60)
-    output_path_with_ffill = base_path / "downloads/data" / f"{file_name.split('.')[0]}_with_ffill.csv"
+    output_path_with_ffill = base_path / "data" / f"{CSV_FILE_NAME.split('.')[0]}_with_ffill.csv"
     df_with_ffill = transform_data_to_ml_format(
         str(csv_path),
         str(config_path),
@@ -135,7 +156,7 @@ if __name__ == "__main__":
     print("="*60)
     print("VERSÃO 2: SEM FORWARD FILL (mantém valores NaN)")
     print("="*60)
-    output_path_without_ffill = base_path / "downloads/data" / f"{file_name.split('.')[0]}_without_ffill.csv"
+    output_path_without_ffill = base_path / "data" / f"{CSV_FILE_NAME.split('.')[0]}_without_ffill.csv"
     df_without_ffill = transform_data_to_ml_format(
         str(csv_path),
         str(config_path),

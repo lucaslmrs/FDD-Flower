@@ -219,6 +219,121 @@ def plot_client_sample_distribution(save_dir: str = "artifacts"):
     print(f"✓ Client sample distribution plot saved to: {path}")
 
 
+def plot_test_labels_distribution(save_dir: str = "artifacts"):
+    """Plot the distribution of labels per client in test data.
+    
+    This visualization shows how many normal (0) and fault (1) samples
+    each client has in their test set, helping to understand data imbalance
+    and client-specific fault patterns.
+    
+    Args:
+        save_dir: Directory to save the plot
+    """
+    from .task import _load_csv_data
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Load data
+    data = _load_csv_data()
+    
+    # Extract label distribution from test sets
+    client_ids = []
+    normal_counts = []
+    fault_counts = []
+    
+    for client_id in sorted(data['data_by_client'].keys()):
+        client_data = data['data_by_client'][client_id]
+        test_labels = client_data['labels_test']
+        
+        # Count labels (0 = normal, 1 = fault)
+        unique, counts = np.unique(test_labels, return_counts=True)
+        label_counts = dict(zip(unique, counts))
+        
+        client_ids.append(f"Client {client_id}")
+        normal_counts.append(label_counts.get(0, 0))
+        fault_counts.append(label_counts.get(1, 0))
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Plot 1: Stacked bar chart
+    x = np.arange(len(client_ids))
+    width = 0.6
+    
+    bars1 = ax1.bar(x, normal_counts, width, label='Normal (0)', color='#16A085', alpha=0.8)
+    bars2 = ax1.bar(x, fault_counts, width, bottom=normal_counts, label='Fault (1)', color='#E74C3C', alpha=0.8)
+    
+    # Add value labels on bars
+    for i, (normal, fault) in enumerate(zip(normal_counts, fault_counts)):
+        # Normal count
+        if normal > 0:
+            ax1.text(i, normal / 2, str(normal), ha='center', va='center', 
+                    fontweight='bold', fontsize=10, color='white')
+        # Fault count
+        if fault > 0:
+            ax1.text(i, normal + fault / 2, str(fault), ha='center', va='center',
+                    fontweight='bold', fontsize=10, color='white')
+        # Total on top
+        total = normal + fault
+        ax1.text(i, total + max(normal_counts + fault_counts) * 0.02, str(total),
+                ha='center', va='bottom', fontweight='bold', fontsize=9)
+    
+    ax1.set_xlabel("Client", fontsize=12, fontweight='bold')
+    ax1.set_ylabel("Number of Test Samples", fontsize=12, fontweight='bold')
+    ax1.set_title("Test Set Label Distribution per Client - Stacked View", 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(client_ids)
+    ax1.legend(loc='upper right', fontsize=10)
+    ax1.grid(axis='y', alpha=0.3, linestyle='--')
+    
+    # Plot 2: Grouped bar chart
+    width = 0.35
+    bars1 = ax2.bar(x - width/2, normal_counts, width, label='Normal (0)', color='#16A085', alpha=0.8)
+    bars2 = ax2.bar(x + width/2, fault_counts, width, label='Fault (1)', color='#E74C3C', alpha=0.8)
+    
+    # Add value labels on bars
+    for i, normal in enumerate(normal_counts):
+        if normal > 0:
+            ax2.text(i - width/2, normal + max(normal_counts + fault_counts) * 0.01, 
+                    str(normal), ha='center', va='bottom', fontweight='bold', fontsize=9)
+    
+    for i, fault in enumerate(fault_counts):
+        if fault > 0:
+            ax2.text(i + width/2, fault + max(normal_counts + fault_counts) * 0.01, 
+                    str(fault), ha='center', va='bottom', fontweight='bold', fontsize=9)
+    
+    ax2.set_xlabel("Client", fontsize=12, fontweight='bold')
+    ax2.set_ylabel("Number of Test Samples", fontsize=12, fontweight='bold')
+    ax2.set_title("Test Set Label Distribution per Client - Grouped View", 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(client_ids)
+    ax2.legend(loc='upper right', fontsize=10)
+    ax2.grid(axis='y', alpha=0.3, linestyle='--')
+    
+    plt.tight_layout()
+    path = os.path.join(save_dir, "test_labels_distribution.png")
+    plt.savefig(path, bbox_inches="tight")
+    plt.close()
+    
+    print(f"✓ Test labels distribution plot saved to: {path}")
+    
+    # Print summary statistics
+    total_test_samples = sum(normal_counts) + sum(fault_counts)
+    total_normal = sum(normal_counts)
+    total_fault = sum(fault_counts)
+    
+    print("\n=== Test Set Label Distribution Summary ===")
+    print(f"Total test samples: {total_test_samples}")
+    print(f"Total normal samples (0): {total_normal} ({total_normal/total_test_samples*100:.1f}%)")
+    print(f"Total fault samples (1): {total_fault} ({total_fault/total_test_samples*100:.1f}%)")
+    print("\nPer-client breakdown:")
+    for i, client_id in enumerate(client_ids):
+        total = normal_counts[i] + fault_counts[i]
+        print(f"  {client_id}: {normal_counts[i]} normal, {fault_counts[i]} fault (total: {total})")
+
+
 # =============================================================================
 # d) Comparação Global vs Personalizado
 # =============================================================================
@@ -625,33 +740,36 @@ def generate_all_visualizations(results_path: str = "results.json",
     os.makedirs(save_dir, exist_ok=True)
     
     # a) Convergência e Performance
-    print("\n[1/7] Plotting federated convergence...")
+    print("\n[1/8] Plotting federated convergence...")
     plot_federated_convergence(results, save_dir)
     
-    print("\n[2/7] Plotting client accuracy evolution...")
+    print("\n[2/8] Plotting client accuracy evolution...")
     plot_client_accuracy_evolution(results, save_dir)
     
     # c) Contribuição dos Clientes
-    print("\n[3/7] Plotting client sample distribution...")
+    print("\n[3/8] Plotting client sample distribution...")
     plot_client_sample_distribution(save_dir)
     
+    print("\n[4/8] Plotting test labels distribution per client...")
+    plot_test_labels_distribution(save_dir)
+    
     # d) Comparação Global vs Personalizado
-    print("\n[4/7] Plotting global vs personalized comparison...")
+    print("\n[5/8] Plotting global vs personalized comparison...")
     plot_global_vs_personalized(results, save_dir)
     
     # f) Estrutura do Modelo
-    print("\n[5/7] Plotting model parameters analysis...")
+    print("\n[6/8] Plotting model parameters analysis...")
     plot_model_parameters_analysis(save_dir)
     
     # g) Análise de Erros
     if run_dir and os.path.exists(run_dir):
-        print("\n[6/7] Plotting confusion matrices...")
+        print("\n[7/8] Plotting confusion matrices...")
         plot_confusion_matrices(run_dir, save_dir)
     else:
-        print("\n[6/7] Skipping confusion matrices (run_dir not provided or doesn't exist)")
+        print("\n[7/8] Skipping confusion matrices (run_dir not provided or doesn't exist)")
     
     # Class distribution (already exists)
-    print("\n[7/7] Class distribution already generated during training")
+    print("\n[8/8] Class distribution already generated during training")
     
     print("\n" + "="*60)
     print("ALL VISUALIZATIONS GENERATED SUCCESSFULLY!")

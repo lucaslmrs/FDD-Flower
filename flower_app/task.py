@@ -1,42 +1,61 @@
-"""Flower app for Bearing Fault Detection using Federated Learning."""
+"""Flower app for Pick-and-Place Fault Detection using Federated Learning."""
 
 from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
-import scipy.io
+import pandas as pd
 import torch
 import torch.nn as nn
-from scipy.fft import fft
-from scipy.signal import hilbert
 from torch.utils.data import DataLoader, TensorDataset
 
 # =============================================================================
 # Configuration (default values - can be overridden via pyproject.toml)
 # =============================================================================
 
-# Path to dataset (fixed path)
-DATA_PATH = Path(__file__).parent.parent / "downloads" / "dataset_for_team"
+# Path to dataset
+DATA_PATH = Path(__file__).parent.parent / "data" / "all_scenarios_concatenated.csv"
 
 # System parameters (defaults)
-FS = 50000  # Sampling rate (Hz) - configurable via 'sampling-rate'
-NUM_CLASSES = 8  # Number of classes - configurable via 'num-classes'
-NUM_FEATURES = 4  # Number of input features - configurable via 'num-features'
-DIRICHLET_ALPHA = 1.0  # Dirichlet alpha - configurable via 'dirichlet-alpha'
+NUM_CLASSES = 2  # Binary classification: 0 = normal, 1 = fault
+NUM_FEATURES = 11  # Number of input features (velocity + position)
+
+# Feature columns to use for training
+FEATURE_COLUMNS = [
+    # Velocity features (7)
+    'AVG_SPEED',
+    'x_speed', 'y_speed', 'z_speed',
+    'x_filt_speed', 'y_filt_speed', 'z_filt_speed',
+    # Position features (4)
+    'x_pos', 'y_pos', 'z_pos',
+    'claw_pos',
+]
+
+# Label column
+LABEL_COLUMN = 'has_fault'
+
+# Client ID column for partitioning
+CLIENT_ID_COLUMN = 'client_id'
 
 
 # =============================================================================
-# Model Definition - Neural Network for Bearing Fault Detection
+# Model Definition - Neural Network for Fault Detection
 # =============================================================================
 
 # Neural Network Architecture Configuration
-HIDDEN_LAYERS = [64, 32]  # Hidden layer sizes
-DROPOUT_RATE = 0.3  # Dropout rate for regularization
+HIDDEN_LAYERS = [256, 128, 64, 32]  # Hidden layer sizes - deeper network for complex patterns
+DROPOUT_RATE = 0.4  # Dropout rate for regularization
 USE_BATCH_NORM = True  # Whether to use batch normalization
+
+# Training Optimization Configuration
+BATCH_SIZE = 128  # Larger batch size for GPU acceleration
+NUM_WORKERS = 4  # Number of workers for DataLoader (parallel data loading)
+PIN_MEMORY = True  # Pin memory for faster GPU transfer
+USE_AMP = True  # Use Automatic Mixed Precision for faster training
 
 
 class Net(nn.Module):
-    """Neural Network model for bearing fault detection.
+    """Neural Network model for fault detection.
     
     Architecture:
         - Input layer: num_features
@@ -99,284 +118,229 @@ class Net(nn.Module):
 
 
 # =============================================================================
-# Feature Extraction Functions
-# =============================================================================
-
-def extract_features_single(signal: np.ndarray, sampling_rate: int = None) -> np.ndarray:
-    """Extract features from a single vibration signal using Hilbert Transform + FFT.
-    
-    Args:
-        signal: 1D numpy array with vibration data
-        sampling_rate: Sampling rate in Hz (uses FS default if not provided)
-        
-    Returns:
-        1D numpy array with 4 harmonic features
-    """
-    fs = sampling_rate if sampling_rate is not None else FS
-    
-    # Apply Hilbert transform to get envelope
-    envelope = np.abs(hilbert(signal))
-    
-    # Centralize (remove mean)
-    envelope_centered = envelope - np.mean(envelope)
-    
-    # Apply FFT
-    fft_result = np.abs(fft(envelope_centered))
-    
-    # Take only positive frequencies (first half)
-    n_points = len(fft_result) // 2
-    fft_positive = fft_result[:n_points]
-    
-    # Calculate frequency vector
-    T_total = n_points * 2 / fs
-    d_f = 1 / T_total
-    frequency_vector = np.arange(0, fs - d_f, d_f)
-    
-    # Ensure frequency_vector matches fft_positive length
-    if len(frequency_vector) > len(fft_positive):
-        frequency_vector = frequency_vector[:len(fft_positive)]
-    
-    # Extract harmonics at specific frequency bands
-    # These bands correspond to characteristic fault frequencies
-    features = []
-    
-    # First harmonic: 10-20 Hz (related to shaft rotation)
-    mask1 = (frequency_vector > 10) & (frequency_vector < 20)
-    features.append(np.mean(fft_positive[mask1]) if np.any(mask1) else 0.0)
-    
-    # Second harmonic: 90-100 Hz (BPFO region)
-    mask2 = (frequency_vector > 90) & (frequency_vector < 100)
-    features.append(np.mean(fft_positive[mask2]) if np.any(mask2) else 0.0)
-    
-    # Third harmonic: 126-136 Hz (BPFI region)
-    mask3 = (frequency_vector > 126) & (frequency_vector < 136)
-    features.append(np.mean(fft_positive[mask3]) if np.any(mask3) else 0.0)
-    
-    # Fourth harmonic: 20-30 Hz
-    mask4 = (frequency_vector > 20) & (frequency_vector < 30)
-    features.append(np.mean(fft_positive[mask4]) if np.any(mask4) else 0.0)
-    
-    return np.array(features, dtype=np.float32)
-
-
-def extract_features_batch(signals: np.ndarray, sampling_rate: int = None) -> np.ndarray:
-    """Extract features from multiple signals.
-    
-    Args:
-        signals: 2D numpy array (n_samples, signal_length)
-        sampling_rate: Sampling rate in Hz (uses FS default if not provided)
-        
-    Returns:
-        2D numpy array (n_samples, n_features)
-    """
-    features = []
-    for i in range(signals.shape[0]):
-        features.append(extract_features_single(signals[i], sampling_rate))
-    return np.array(features)
-
-
-# =============================================================================
 # Data Loading Functions
 # =============================================================================
 
 # Cache for loaded data
 _cached_data = None
+_class_weights = None
 
 
-def _load_mat_data():
-    """Load and cache the .mat data files."""
-    global _cached_data
+def _load_csv_data():
+    """Load and cache the CSV data file."""
+    global _cached_data, _class_weights
     
     if _cached_data is not None:
         return _cached_data
     
-    # Load training data
-    mat_train = scipy.io.loadmat(str(DATA_PATH / "data_train.mat"))
-    mat_train_labels = scipy.io.loadmat(str(DATA_PATH / "data_train_labels.mat"))
+    print(f"Loading data from: {DATA_PATH}")
+    df = pd.read_csv(DATA_PATH)
     
-    # Load test data
-    mat_test = scipy.io.loadmat(str(DATA_PATH / "data_test.mat"))
-    mat_test_labels = scipy.io.loadmat(str(DATA_PATH / "data_test_labels.mat"))
+    # Get unique client IDs
+    unique_clients = df[CLIENT_ID_COLUMN].unique()
+    print(f"Unique clients found: {unique_clients}")
     
-    # Extract and flatten signals
-    data_train = mat_train['data_train'][0]
-    data_train = np.array([a.flatten() for a in data_train])
+    # Create client_id to partition_id mapping
+    client_to_partition = {client: idx for idx, client in enumerate(sorted(unique_clients))}
+    print(f"Client to partition mapping: {client_to_partition}")
     
-    data_test = mat_test['data_test'][0]
-    data_test = np.array([a.flatten() for a in data_test])
+    # Check for missing values in feature columns
+    available_features = [col for col in FEATURE_COLUMNS if col in df.columns]
+    missing_features = [col for col in FEATURE_COLUMNS if col not in df.columns]
     
-    # Extract labels (convert from 1-8 to 0-7 for PyTorch)
-    labels_train = mat_train_labels['data_train_labels'].flatten() - 1
-    labels_test = mat_test_labels['data_test_labels'].flatten() - 1
+    if missing_features:
+        print(f"Warning: Missing features in CSV: {missing_features}")
+        print(f"Using available features: {available_features}")
     
-    # Extract features
-    print("Extracting features from training data...")
-    features_train = extract_features_batch(data_train)
-    print("Extracting features from test data...")
-    features_test = extract_features_batch(data_test)
+    # Extract features and labels
+    features = df[available_features].values.astype(np.float32)
+    labels = df[LABEL_COLUMN].values.astype(np.int64)
+    client_ids = df[CLIENT_ID_COLUMN].values
+    
+    # Handle NaN values (fill with 0)
+    features = np.nan_to_num(features, nan=0.0)
     
     # Normalize features (z-score normalization)
-    mean = features_train.mean(axis=0)
-    std = features_train.std(axis=0) + 1e-8
-    features_train = (features_train - mean) / std
-    features_test = (features_test - mean) / std
+    mean = features.mean(axis=0)
+    std = features.std(axis=0) + 1e-8
+    features_normalized = (features - mean) / std
+    
+    # Calculate class weights for imbalanced data
+    class_counts = np.bincount(labels)
+    total_samples = len(labels)
+    class_weights = total_samples / (len(class_counts) * class_counts)
+    _class_weights = torch.tensor(class_weights, dtype=torch.float32)
+    
+    print(f"\nDataset statistics:")
+    print(f"  - Total samples: {total_samples}")
+    print(f"  - Features: {len(available_features)}")
+    print(f"  - Class distribution: {dict(zip(range(len(class_counts)), class_counts))}")
+    print(f"  - Class weights: {class_weights}")
+    
+    # Organize data by client
+    data_by_client = {}
+    for client in unique_clients:
+        mask = client_ids == client
+        client_features = features_normalized[mask]
+        client_labels = labels[mask]
+        
+        # Split into train (80%) and test (20%)
+        n_samples = len(client_features)
+        n_train = int(0.8 * n_samples)
+        
+        # Shuffle before splitting
+        indices = np.random.permutation(n_samples)
+        client_features = client_features[indices]
+        client_labels = client_labels[indices]
+        
+        data_by_client[client] = {
+            'features_train': client_features[:n_train],
+            'labels_train': client_labels[:n_train],
+            'features_test': client_features[n_train:],
+            'labels_test': client_labels[n_train:],
+        }
+        
+        print(f"  - Client {client}: {n_train} train, {n_samples - n_train} test samples")
     
     _cached_data = {
-        'features_train': features_train,
-        'labels_train': labels_train,
-        'features_test': features_test,
-        'labels_test': labels_test,
+        'data_by_client': data_by_client,
+        'client_to_partition': client_to_partition,
+        'partition_to_client': {v: k for k, v in client_to_partition.items()},
+        'num_clients': len(unique_clients),
         'mean': mean,
-        'std': std
+        'std': std,
+        'feature_names': available_features,
     }
     
     return _cached_data
 
 
-def _dirichlet_partition(labels: np.ndarray, num_partitions: int, alpha: float, seed: int = 42):
-    """Partition data indices using Dirichlet distribution.
-    
-    Args:
-        labels: Array of labels for each sample
-        num_partitions: Number of partitions (clients)
-        alpha: Dirichlet concentration parameter (lower = more non-IID)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        List of index arrays, one per partition
-    """
-    np.random.seed(seed)
-    
-    n_samples = len(labels)
-    n_classes = len(np.unique(labels))
-    
-    # Get indices for each class
-    class_indices = [np.where(labels == c)[0] for c in range(n_classes)]
-    
-    # Initialize partition indices
-    partition_indices = [[] for _ in range(num_partitions)]
-    
-    # For each class, distribute samples according to Dirichlet
-    for c in range(n_classes):
-        indices = class_indices[c]
-        np.random.shuffle(indices)
-        
-        # Sample from Dirichlet distribution
-        proportions = np.random.dirichlet([alpha] * num_partitions)
-        
-        # Calculate number of samples per partition for this class
-        proportions = (proportions * len(indices)).astype(int)
-        
-        # Adjust to ensure all samples are assigned
-        proportions[-1] = len(indices) - proportions[:-1].sum()
-        
-        # Assign indices to partitions
-        start = 0
-        for p in range(num_partitions):
-            end = start + proportions[p]
-            partition_indices[p].extend(indices[start:end].tolist())
-            start = end
-    
-    # Shuffle each partition
-    for p in range(num_partitions):
-        np.random.shuffle(partition_indices[p])
-        partition_indices[p] = np.array(partition_indices[p])
-    
-    return partition_indices
+def get_class_weights():
+    """Get class weights for imbalanced data handling."""
+    global _class_weights
+    if _class_weights is None:
+        _load_csv_data()
+    return _class_weights
 
 
-# Cache for partitioned indices
-_partition_cache = None
+# Cache for visualization flag
 _visualization_done = False
 
 
 def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampling_rate: int = None):
-    """Load partitioned bearing fault data for a specific client.
+    """Load partitioned fault detection data for a specific client.
     
     Args:
         partition_id: ID of the partition/client (0 to num_partitions-1)
-        num_partitions: Total number of partitions
-        alpha: Dirichlet alpha parameter for non-IID partitioning
-        sampling_rate: Sampling rate in Hz for feature extraction
+        num_partitions: Total number of partitions (ignored - uses actual clients)
+        alpha: Dirichlet alpha parameter (ignored - using natural partitioning)
+        sampling_rate: Sampling rate (ignored - not applicable for CSV data)
         
     Returns:
         Tuple of (trainloader, testloader)
     """
-    global _partition_cache, _visualization_done
-    alpha = alpha if alpha is not None else DIRICHLET_ALPHA
+    global _visualization_done
     
     # Load data
-    data = _load_mat_data()
-    features_train = data['features_train']
-    labels_train = data['labels_train']
+    data = _load_csv_data()
     
-    # Create partitions if not cached
-    if _partition_cache is None or _partition_cache['num_partitions'] != num_partitions:
-        partition_indices = _dirichlet_partition(
-            labels_train, num_partitions, alpha
-        )
-        _partition_cache = {
-            'num_partitions': num_partitions,
-            'indices': partition_indices
-        }
-        _visualization_done = False  # Reset visualization flag for new partitioning
+    # Get client ID for this partition
+    if partition_id >= data['num_clients']:
+        raise ValueError(f"partition_id {partition_id} >= num_clients {data['num_clients']}")
     
-    # Generate visualization plot (only once per partitioning)
+    client_id = data['partition_to_client'][partition_id]
+    client_data = data['data_by_client'][client_id]
+    
+    # Generate visualization plot (only once)
     if not _visualization_done:
-        from .visualization import plot_class_distribution
-        plot_class_distribution(
-            partition_indices=_partition_cache['indices'],
-            labels=labels_train,
-            num_classes=NUM_CLASSES,
-            save_dir="artifacts",
-        )
-        _visualization_done = True
-    
-    # Get indices for this partition
-    indices = _partition_cache['indices'][partition_id]
-    
-    # Get data for this partition
-    X = features_train[indices]
-    y = labels_train[indices]
-    
-    # Split into train (80%) and validation (20%)
-    n_samples = len(X)
-    n_train = int(0.8 * n_samples)
-    
-    X_train, X_val = X[:n_train], X[n_train:]
-    y_train, y_val = y[:n_train], y[n_train:]
+        try:
+            from .visualization import plot_class_distribution
+            
+            # Prepare data for visualization
+            all_labels = []
+            partition_indices = []
+            current_idx = 0
+            
+            for pid in range(data['num_clients']):
+                cid = data['partition_to_client'][pid]
+                cdata = data['data_by_client'][cid]
+                n_samples = len(cdata['labels_train'])
+                all_labels.extend(cdata['labels_train'].tolist())
+                partition_indices.append(np.arange(current_idx, current_idx + n_samples))
+                current_idx += n_samples
+            
+            plot_class_distribution(
+                partition_indices=partition_indices,
+                labels=np.array(all_labels),
+                num_classes=NUM_CLASSES,
+                save_dir="artifacts",
+            )
+            _visualization_done = True
+        except Exception as e:
+            print(f"Warning: Could not generate visualization: {e}")
+            _visualization_done = True
     
     # Convert to PyTorch tensors
     train_dataset = TensorDataset(
-        torch.tensor(X_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=torch.long)
+        torch.tensor(client_data['features_train'], dtype=torch.float32),
+        torch.tensor(client_data['labels_train'], dtype=torch.long)
     )
-    val_dataset = TensorDataset(
-        torch.tensor(X_val, dtype=torch.float32),
-        torch.tensor(y_val, dtype=torch.long)
+    test_dataset = TensorDataset(
+        torch.tensor(client_data['features_test'], dtype=torch.float32),
+        torch.tensor(client_data['labels_test'], dtype=torch.long)
     )
     
-    # Create DataLoaders
-    trainloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    testloader = DataLoader(val_dataset, batch_size=32)
+    # Create DataLoaders with optimizations
+    trainloader = DataLoader(
+        train_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=True if NUM_WORKERS > 0 else False
+    )
+    testloader = DataLoader(
+        test_dataset, 
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=True if NUM_WORKERS > 0 else False
+    )
     
     return trainloader, testloader
 
 
 def load_test_data():
-    """Load the centralized test dataset.
+    """Load the centralized test dataset (all clients combined).
     
     Returns:
         DataLoader for test data
     """
-    data = _load_mat_data()
+    data = _load_csv_data()
+    
+    # Combine test data from all clients
+    all_features = []
+    all_labels = []
+    
+    for client_id in data['data_by_client']:
+        client_data = data['data_by_client'][client_id]
+        all_features.append(client_data['features_test'])
+        all_labels.append(client_data['labels_test'])
+    
+    features = np.concatenate(all_features, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
     
     test_dataset = TensorDataset(
-        torch.tensor(data['features_test'], dtype=torch.float32),
-        torch.tensor(data['labels_test'], dtype=torch.long)
+        torch.tensor(features, dtype=torch.float32),
+        torch.tensor(labels, dtype=torch.long)
     )
     
-    return DataLoader(test_dataset, batch_size=32)
+    return DataLoader(
+        test_dataset, 
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY
+    )
 
 
 # =============================================================================
@@ -384,7 +348,7 @@ def load_test_data():
 # =============================================================================
 
 def train(net, trainloader, epochs, lr, device):
-    """Train the model on the training set.
+    """Train the model on the training set with class weights and mixed precision.
     
     Args:
         net: PyTorch model
@@ -397,8 +361,17 @@ def train(net, trainloader, epochs, lr, device):
         Average training loss
     """
     net.to(device)
-    criterion = nn.CrossEntropyLoss().to(device)
+    
+    # Use class weights for imbalanced data
+    class_weights = get_class_weights().to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights).to(device)
+    
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    
+    # Mixed precision training for GPU acceleration
+    use_amp = USE_AMP and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    
     net.train()
     
     running_loss = 0.0
@@ -407,13 +380,25 @@ def train(net, trainloader, epochs, lr, device):
     for _ in range(epochs):
         for batch in trainloader:
             features, labels = batch
-            features, labels = features.to(device), labels.to(device)
+            features, labels = features.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             
-            optimizer.zero_grad()
-            outputs = net(features)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+            
+            if use_amp:
+                # Mixed precision forward and backward pass
+                with torch.cuda.amp.autocast():
+                    outputs = net(features)
+                    loss = criterion(outputs, labels)
+                
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # Regular training
+                outputs = net(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
             
             running_loss += loss.item()
             total_batches += 1
@@ -434,7 +419,10 @@ def test(net, testloader, device):
         Tuple of (loss, accuracy)
     """
     net.to(device)
-    criterion = nn.CrossEntropyLoss()
+    
+    # Use class weights for consistent evaluation
+    class_weights = get_class_weights().to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     
     correct = 0
     total_loss = 0.0
@@ -444,7 +432,7 @@ def test(net, testloader, device):
     with torch.no_grad():
         for batch in testloader:
             features, labels = batch
-            features, labels = features.to(device), labels.to(device)
+            features, labels = features.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             
             outputs = net(features)
             total_loss += criterion(outputs, labels).item()
@@ -473,3 +461,148 @@ def set_weights(net, parameters):
     params_dict = zip(net.state_dict().keys(), parameters)
     state_dict = OrderedDict({k: torch.from_numpy(v.copy()) for k, v in params_dict})
     net.load_state_dict(state_dict, strict=True)
+
+
+# =============================================================================
+# Personalized Federated Learning - Fine-tuning Functions
+# =============================================================================
+
+def freeze_first_half(net):
+    """Freeze the first half of the network layers for fine-tuning.
+    
+    With HIDDEN_LAYERS = [256, 128, 64, 32], the network has:
+    - 4 hidden blocks × 4 modules each (Linear, BatchNorm, ReLU, Dropout) = 16 modules
+    - 1 output layer = 17 modules total
+    
+    First half (freeze): modules 0-7 (hidden layers 256, 128)
+    Second half (train): modules 8-16 (hidden layers 64, 32 + output)
+    """
+    modules = list(net.network.children())
+    total_modules = len(modules)
+    freeze_until = total_modules // 2  # Freeze first half
+    
+    frozen_count = 0
+    trainable_count = 0
+    
+    for idx, module in enumerate(modules):
+        if idx < freeze_until:
+            # Freeze this layer
+            for param in module.parameters():
+                param.requires_grad = False
+                frozen_count += param.numel()
+        else:
+            # Keep trainable
+            for param in module.parameters():
+                param.requires_grad = True
+                trainable_count += param.numel()
+    
+    print(f"Fine-tuning mode: Frozen {frozen_count} params, Trainable {trainable_count} params")
+    return net
+
+
+def fine_tune(net, trainloader, epochs, lr, device):
+    """Fine-tune only the unfrozen (second half) layers of the model.
+    
+    Args:
+        net: PyTorch model with some layers frozen
+        trainloader: DataLoader for training data
+        epochs: Number of fine-tuning epochs
+        lr: Learning rate for fine-tuning (typically smaller)
+        device: Device to train on (cpu/cuda)
+        
+    Returns:
+        Average training loss during fine-tuning
+    """
+    net.to(device)
+    
+    # Use class weights for imbalanced data
+    class_weights = get_class_weights().to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights).to(device)
+    
+    # Only optimize parameters that require gradients (unfrozen layers)
+    trainable_params = filter(lambda p: p.requires_grad, net.parameters())
+    optimizer = torch.optim.Adam(trainable_params, lr=lr)
+    
+    # Mixed precision training for GPU acceleration
+    use_amp = USE_AMP and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    
+    net.train()
+    
+    running_loss = 0.0
+    total_batches = 0
+    
+    for epoch in range(epochs):
+        for batch in trainloader:
+            features, labels = batch
+            features, labels = features.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+            
+            optimizer.zero_grad(set_to_none=True)
+            
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    outputs = net(features)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = net(features)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+            
+            running_loss += loss.item()
+            total_batches += 1
+    
+    avg_loss = running_loss / max(total_batches, 1)
+    return avg_loss
+
+
+def save_personalized_model(net, client_id, run_dir):
+    """Save a personalized model for a specific client.
+    
+    Args:
+        net: PyTorch model to save
+        client_id: Client identifier
+        run_dir: Directory for this run (e.g., artifacts/run_001)
+    """
+    import os
+    os.makedirs(run_dir, exist_ok=True)
+    
+    model_path = os.path.join(run_dir, f"personalized_model_client_{client_id}")
+    torch.save(net.state_dict(), model_path)
+    print(f"Saved personalized model for client {client_id} to {model_path}")
+    return model_path
+
+
+def get_next_run_dir(base_dir="artifacts"):
+    """Get the next run directory with incremental counter.
+    
+    Returns:
+        Path to the new run directory (e.g., artifacts/run_001)
+    """
+    import os
+    os.makedirs(base_dir, exist_ok=True)
+    
+    # Find existing run directories
+    existing_runs = [d for d in os.listdir(base_dir) 
+                     if os.path.isdir(os.path.join(base_dir, d)) and d.startswith("run_")]
+    
+    if not existing_runs:
+        next_num = 1
+    else:
+        # Extract numbers and find max
+        nums = []
+        for run in existing_runs:
+            try:
+                num = int(run.split("_")[1])
+                nums.append(num)
+            except (IndexError, ValueError):
+                continue
+        next_num = max(nums) + 1 if nums else 1
+    
+    run_dir = os.path.join(base_dir, f"run_{next_num:03d}")
+    os.makedirs(run_dir, exist_ok=True)
+    print(f"Created run directory: {run_dir}")
+    return run_dir

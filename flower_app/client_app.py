@@ -1,4 +1,4 @@
-"""Flower Client App for Bearing Fault Detection using Federated Learning."""
+"""Flower Client App for Pick-and-Place Fault Detection using Federated Learning."""
 
 import json
 from random import random
@@ -7,16 +7,20 @@ import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import ConfigRecord, Context
 
-from flower_app.task import Net, get_weights, load_data, set_weights, test, train
+from flower_app.task import (
+    Net, get_weights, load_data, set_weights, test, train,
+    freeze_first_half, fine_tune, save_personalized_model
+)
 
 
 class FlowerClient(NumPyClient):
-    def __init__(self, net, trainloader, valloader, local_epochs, context: Context):
+    def __init__(self, net, trainloader, valloader, local_epochs, context: Context, partition_id: int):
         self.client_state = context.state
         self.net = net
         self.trainloader = trainloader
         self.valloader = valloader
         self.local_epochs = local_epochs
+        self.partition_id = partition_id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.net.to(self.device)
 
@@ -29,15 +33,46 @@ class FlowerClient(NumPyClient):
         Then, communicate the weights of the locally-updated model back to the
         ServerApp.
         """
+        # Check if this is a fine-tuning round
+        is_fine_tuning = config.get("fine_tuning", False)
+        
         # Apply parameters to local model
         set_weights(self.net, parameters)
-        train_loss = train(
-            self.net,
-            self.trainloader,
-            self.local_epochs,
-            config["lr"],
-            self.device,
-        )
+        
+        if is_fine_tuning:
+            # Fine-tuning phase: freeze first half, train second half locally
+            print(f"\n=== Fine-tuning phase for client {self.partition_id} ===")
+            freeze_first_half(self.net)
+            
+            fine_tuning_lr = config.get("fine_tuning_lr", 0.001)
+            fine_tuning_epochs = config.get("fine_tuning_epochs", 5)
+            
+            train_loss = fine_tune(
+                self.net,
+                self.trainloader,
+                fine_tuning_epochs,
+                fine_tuning_lr,
+                self.device,
+            )
+            
+            # Save personalized model
+            run_dir = config.get("run_dir", "artifacts/run_000")
+            save_personalized_model(self.net, self.partition_id, run_dir)
+            
+            # Evaluate personalized model
+            val_loss, val_accuracy = test(self.net, self.valloader, self.device)
+            print(f"Client {self.partition_id} personalized - Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
+            
+        else:
+            # Regular federated training
+            train_loss = train(
+                self.net,
+                self.trainloader,
+                self.local_epochs,
+                config["lr"],
+                self.device,
+            )
+            val_loss, val_accuracy = 0.0, 0.0
 
         # Append to persistent state the `train_loss` just obtained
         fit_metrics = self.client_state.config_records["fit_metrics"]
@@ -48,21 +83,21 @@ class FlowerClient(NumPyClient):
             # If it's not the first entry, append to the existing list
             fit_metrics["train_loss_hist"].append(train_loss)
 
-        # A complex metric strcuture can be returned by a ClientApp if it is first
-        # converted to a supported type by `flwr.common.Scalar`. Here we serialize it with
-        # JSON and therefore representing it as a string (one of the supported types)
+        # Complex metric for demonstration
         complex_metric = {"a": 123, "b": random(), "mylist": [1, 2, 3, 4]}
         complex_metric_str = json.dumps(complex_metric)
 
         return (
-            get_weights(self.net),  # Return parameters of the locally-updated model
-            len(
-                self.trainloader.dataset
-            ),  # Training examples used (needed sometimes for aggregation)
+            get_weights(self.net),
+            len(self.trainloader.dataset),
             {
                 "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_accuracy": val_accuracy,
+                "partition_id": self.partition_id,
                 "my_metric": complex_metric_str,
-            },  # Communicate metrics
+                "fine_tuning": is_fine_tuning,
+            },
         )
 
     def evaluate(self, parameters, config):
@@ -81,8 +116,6 @@ def client_fn(context: Context):
 
     # Read the run config (defined in the `pyproject.toml`)
     local_epochs = context.run_config["local-epochs"]
-    dirichlet_alpha = context.run_config["dirichlet-alpha"]
-    sampling_rate = context.run_config["sampling-rate"]
     num_classes = context.run_config["num-classes"]
     num_features = context.run_config["num-features"]
 
@@ -92,12 +125,10 @@ def client_fn(context: Context):
     # Read node config and fetch data for the ClientApp that is being constructed
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    trainloader, valloader = load_data(
-        partition_id, num_partitions, alpha=dirichlet_alpha, sampling_rate=sampling_rate
-    )
+    trainloader, valloader = load_data(partition_id, num_partitions)
 
-    # Return Client instance
-    return FlowerClient(net, trainloader, valloader, local_epochs, context).to_client()
+    # Return Client instance with partition_id for personalization
+    return FlowerClient(net, trainloader, valloader, local_epochs, context, partition_id).to_client()
 
 
 # Flower ClientApp

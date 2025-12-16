@@ -118,14 +118,22 @@ def client_fn(context: Context):
     local_epochs = context.run_config["local-epochs"]
     num_classes = context.run_config["num-classes"]
     num_features = context.run_config["num-features"]
-
-    # Instantiate the model with config parameters
-    net = Net(num_features=num_features, num_classes=num_classes)
     
     # Read node config and fetch data for the ClientApp that is being constructed
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     trainloader, valloader = load_data(partition_id, num_partitions)
+    
+    # Auto-detect num_features from actual data
+    if len(trainloader.dataset) > 0:
+        actual_num_features = trainloader.dataset[0][0].shape[0]
+        if actual_num_features != num_features:
+            print(f"⚠️  Config has {num_features} features, but data has {actual_num_features}")
+            print(f"   Using actual data features: {actual_num_features}")
+            num_features = actual_num_features
+
+    # Instantiate the model with config parameters
+    net = Net(num_features=num_features, num_classes=num_classes)
 
     # Return Client instance with partition_id for personalization
     return FlowerClient(net, trainloader, valloader, local_epochs, context, partition_id).to_client()

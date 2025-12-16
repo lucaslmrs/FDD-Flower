@@ -36,7 +36,7 @@ fine-tuning-lr = 0.001
 fraction-fit = 1.0
 local-epochs = 5
 num-classes = 2
-num-features = 11
+num-features = 120
 
 [tool.flwr.federations]
 default = "gpu-sim"

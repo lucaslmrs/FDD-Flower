@@ -9,6 +9,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+# Import signal processing functions
+from flower_app.signal_processing import (
+    process_signal_to_features,
+    window_signal,
+)
+
 # =============================================================================
 # Configuration (default values - can be overridden via pyproject.toml)
 # =============================================================================
@@ -18,17 +24,29 @@ DATA_PATH = Path(__file__).parent.parent / "data" / "all_scenarios_concatenated.
 
 # System parameters (defaults)
 NUM_CLASSES = 2  # Binary classification: 0 = normal, 1 = fault
-NUM_FEATURES = 11  # Number of input features (velocity + position)
+NUM_FEATURES = 11  # Number of input features extracted from signal processing
 
-# Feature columns to use for training
-FEATURE_COLUMNS = [
-    # Velocity features (7)
-    'AVG_SPEED',
-    'x_speed', 'y_speed', 'z_speed',
-    'x_filt_speed', 'y_filt_speed', 'z_filt_speed',
-    # Position features (4)
-    'x_pos', 'y_pos', 'z_pos',
-    'claw_pos',
+# Signal processing configuration
+USE_SIGNAL_PROCESSING = True  # Enable Hilbert + FFT processing
+SAMPLING_RATE = 10.0  # Hz - approximate sampling rate from timestamps (~100ms intervals)
+WINDOW_SIZE_SECONDS = 20.0  # Window size for signal segmentation (20 seconds)
+WINDOW_OVERLAP = 0.0  # No overlap between windows
+
+# Harmonic frequency bands for feature extraction (in Hz)
+# Adapted from bearing fault detection - adjust based on Pick-and-Place dynamics
+HARMONIC_BANDS = [
+    (0.1, 0.5),   # Very low frequency - slow drift/degradation
+    (0.5, 1.0),   # Low frequency - position control oscillations
+    (1.0, 2.0),   # Mid frequency - velocity variations
+    (2.0, 3.0),   # Higher frequency - rapid changes/faults
+]
+
+# Raw signal columns to process (velocity and position signals)
+SIGNAL_COLUMNS = [
+    'x_speed', 'y_speed', 'z_speed',          # Velocity signals
+    'x_filt_speed', 'y_filt_speed', 'z_filt_speed',  # Filtered velocity
+    'x_pos', 'y_pos', 'z_pos',                # Position signals
+    'AVG_SPEED',                               # Average speed
 ]
 
 # Label column
@@ -126,6 +144,131 @@ _cached_data = None
 _class_weights = None
 
 
+def _process_signal_features(df, client_id):
+    """Process time-series signals using Hilbert + FFT to extract features.
+    
+    Args:
+        df: DataFrame with time-series data for one client/scenario
+        client_id: Client identifier for logging
+        
+    Returns:
+        DataFrame with extracted features and labels
+    """
+    print(f"  Processing signals for client {client_id} using Hilbert + FFT...")
+    
+    # Sort by timestamp to ensure temporal order
+    if 'SourceTimeStamp' in df.columns:
+        df = df.sort_values('SourceTimeStamp').reset_index(drop=True)
+    
+    all_features = []
+    all_labels = []
+    
+    # Check if we should use windowing
+    total_samples = len(df)
+    expected_samples_per_window = int(WINDOW_SIZE_SECONDS * SAMPLING_RATE)
+    
+    if USE_SIGNAL_PROCESSING and total_samples >= expected_samples_per_window:
+        # Process with windowing
+        print(f"    Using {WINDOW_SIZE_SECONDS}s windows (overlap={WINDOW_OVERLAP})")
+        
+        # Process each signal column
+        for col in SIGNAL_COLUMNS:
+            if col not in df.columns:
+                print(f"    Warning: Column {col} not found, skipping")
+                continue
+            
+            signal = df[col].values
+            signal = np.nan_to_num(signal, nan=0.0)
+            
+            # Create windows
+            windows = window_signal(
+                signal, 
+                WINDOW_SIZE_SECONDS, 
+                SAMPLING_RATE, 
+                WINDOW_OVERLAP
+            )
+            
+            # Process each window
+            for window_idx, window in enumerate(windows):
+                # Extract features from this window
+                features = process_signal_to_features(
+                    window, 
+                    SAMPLING_RATE, 
+                    HARMONIC_BANDS
+                )
+                
+                # Get label for this window (majority vote or last sample)
+                window_start = int(window_idx * WINDOW_SIZE_SECONDS * SAMPLING_RATE * (1 - WINDOW_OVERLAP))
+                window_end = min(window_start + expected_samples_per_window, total_samples)
+                window_labels = df[LABEL_COLUMN].iloc[window_start:window_end].values
+                label = int(np.round(np.mean(window_labels)))  # Majority vote
+                
+                # Add column identifier to features
+                features_with_prefix = {f"{col}_{k}": v for k, v in features.items()}
+                all_features.append(features_with_prefix)
+                all_labels.append(label)
+        
+        if not all_features:
+            print(f"    Warning: No features extracted with windowing, using entire signal")
+            # Fallback to processing entire signal
+            return _process_entire_signal(df, client_id)
+        
+        # Combine features from all columns into single rows
+        # Group by window index (every len(SIGNAL_COLUMNS) features belong to same window)
+        features_df = pd.DataFrame(all_features)
+        
+        print(f"    Extracted {len(features_df)} samples from {len(windows)} windows × {len(SIGNAL_COLUMNS)} signals")
+        
+    else:
+        # Process entire signal as one sample (no windowing)
+        print(f"    Processing entire signal (no windowing, {total_samples} samples)")
+        return _process_entire_signal(df, client_id)
+    
+    # Create final dataset
+    features_df['label'] = all_labels
+    return features_df
+
+
+def _process_entire_signal(df, client_id):
+    """Process entire signal as one sample without windowing.
+    
+    Args:
+        df: DataFrame with time-series data
+        client_id: Client identifier
+        
+    Returns:
+        DataFrame with one row of features
+    """
+    all_features = {}
+    
+    for col in SIGNAL_COLUMNS:
+        if col not in df.columns:
+            continue
+        
+        signal = df[col].values
+        signal = np.nan_to_num(signal, nan=0.0)
+        
+        # Extract features from entire signal
+        features = process_signal_to_features(
+            signal, 
+            SAMPLING_RATE, 
+            HARMONIC_BANDS
+        )
+        
+        # Add column prefix
+        for k, v in features.items():
+            all_features[f"{col}_{k}"] = v
+    
+    # Get majority label
+    label = int(np.round(df[LABEL_COLUMN].mean()))
+    
+    features_df = pd.DataFrame([all_features])
+    features_df['label'] = label
+    
+    print(f"    Extracted 1 sample with {len(all_features)} features")
+    return features_df
+
+
 def _load_csv_data():
     """Load and cache the CSV data file."""
     global _cached_data, _class_weights
@@ -144,63 +287,88 @@ def _load_csv_data():
     client_to_partition = {client: idx for idx, client in enumerate(sorted(unique_clients))}
     print(f"Client to partition mapping: {client_to_partition}")
     
-    # Check for missing values in feature columns
-    available_features = [col for col in FEATURE_COLUMNS if col in df.columns]
-    missing_features = [col for col in FEATURE_COLUMNS if col not in df.columns]
+    # Process each client's data with signal processing
+    data_by_client = {}
+    all_features_list = []
+    all_labels_list = []
     
-    if missing_features:
-        print(f"Warning: Missing features in CSV: {missing_features}")
-        print(f"Using available features: {available_features}")
+    for client in unique_clients:
+        client_df = df[df[CLIENT_ID_COLUMN] == client].copy()
+        
+        # Process signals to extract features
+        if USE_SIGNAL_PROCESSING:
+            features_df = _process_signal_features(client_df, client)
+        else:
+            # Legacy mode: use raw features directly
+            print(f"  Using raw features (signal processing disabled)")
+            available_features = [col for col in SIGNAL_COLUMNS if col in client_df.columns]
+            features_df = client_df[available_features + [LABEL_COLUMN]].copy()
+            features_df.columns = list(features_df.columns[:-1]) + ['label']
+        
+        # Handle NaN values
+        features_df = features_df.fillna(0.0)
+        
+        # Split into features and labels
+        label_col = 'label'
+        feature_cols = [col for col in features_df.columns if col != label_col]
+        
+        features = features_df[feature_cols].values.astype(np.float32)
+        labels = features_df[label_col].values.astype(np.int64)
+        
+        # Split into train (80%) and test (20%)
+        n_samples = len(features)
+        n_train = int(0.8 * n_samples)
+        
+        # Shuffle before splitting
+        indices = np.random.permutation(n_samples)
+        features = features[indices]
+        labels = labels[indices]
+        
+        data_by_client[client] = {
+            'features_train': features[:n_train],
+            'labels_train': labels[:n_train],
+            'features_test': features[n_train:],
+            'labels_test': labels[n_train:],
+        }
+        
+        all_features_list.append(features)
+        all_labels_list.append(labels)
+        
+        print(f"  - Client {client}: {n_train} train, {n_samples - n_train} test samples")
     
-    # Extract features and labels
-    features = df[available_features].values.astype(np.float32)
-    labels = df[LABEL_COLUMN].values.astype(np.int64)
-    client_ids = df[CLIENT_ID_COLUMN].values
-    
-    # Handle NaN values (fill with 0)
-    features = np.nan_to_num(features, nan=0.0)
+    # Combine all data for normalization and class weights
+    all_features = np.concatenate(all_features_list, axis=0)
+    all_labels = np.concatenate(all_labels_list, axis=0)
     
     # Normalize features (z-score normalization)
-    mean = features.mean(axis=0)
-    std = features.std(axis=0) + 1e-8
-    features_normalized = (features - mean) / std
+    mean = all_features.mean(axis=0)
+    std = all_features.std(axis=0) + 1e-8
+    
+    # Apply normalization to each client's data
+    for client in unique_clients:
+        data_by_client[client]['features_train'] = (
+            data_by_client[client]['features_train'] - mean
+        ) / std
+        data_by_client[client]['features_test'] = (
+            data_by_client[client]['features_test'] - mean
+        ) / std
     
     # Calculate class weights for imbalanced data
-    class_counts = np.bincount(labels)
-    total_samples = len(labels)
+    class_counts = np.bincount(all_labels)
+    total_samples = len(all_labels)
     class_weights = total_samples / (len(class_counts) * class_counts)
     _class_weights = torch.tensor(class_weights, dtype=torch.float32)
     
     print(f"\nDataset statistics:")
     print(f"  - Total samples: {total_samples}")
-    print(f"  - Features: {len(available_features)}")
+    print(f"  - Features per sample: {all_features.shape[1]}")
     print(f"  - Class distribution: {dict(zip(range(len(class_counts)), class_counts))}")
     print(f"  - Class weights: {class_weights}")
     
-    # Organize data by client
-    data_by_client = {}
-    for client in unique_clients:
-        mask = client_ids == client
-        client_features = features_normalized[mask]
-        client_labels = labels[mask]
-        
-        # Split into train (80%) and test (20%)
-        n_samples = len(client_features)
-        n_train = int(0.8 * n_samples)
-        
-        # Shuffle before splitting
-        indices = np.random.permutation(n_samples)
-        client_features = client_features[indices]
-        client_labels = client_labels[indices]
-        
-        data_by_client[client] = {
-            'features_train': client_features[:n_train],
-            'labels_train': client_labels[:n_train],
-            'features_test': client_features[n_train:],
-            'labels_test': client_labels[n_train:],
-        }
-        
-        print(f"  - Client {client}: {n_train} train, {n_samples - n_train} test samples")
+    # Update NUM_FEATURES based on actual feature count
+    global NUM_FEATURES
+    NUM_FEATURES = all_features.shape[1]
+    print(f"  - Updated NUM_FEATURES to: {NUM_FEATURES}")
     
     _cached_data = {
         'data_by_client': data_by_client,
@@ -209,7 +377,7 @@ def _load_csv_data():
         'num_clients': len(unique_clients),
         'mean': mean,
         'std': std,
-        'feature_names': available_features,
+        'num_features': NUM_FEATURES,
     }
     
     return _cached_data
@@ -280,6 +448,9 @@ def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampl
             print(f"Warning: Could not generate visualization: {e}")
             _visualization_done = True
     
+    # Get actual number of features from data
+    num_features_actual = client_data['features_train'].shape[1]
+    
     # Convert to PyTorch tensors
     train_dataset = TensorDataset(
         torch.tensor(client_data['features_train'], dtype=torch.float32),
@@ -306,6 +477,8 @@ def load_data(partition_id: int, num_partitions: int, alpha: float = None, sampl
         pin_memory=PIN_MEMORY,
         persistent_workers=True if NUM_WORKERS > 0 else False
     )
+    
+    return trainloader, testloader
     
     return trainloader, testloader
 

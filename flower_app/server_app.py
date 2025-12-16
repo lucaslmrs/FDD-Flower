@@ -107,6 +107,15 @@ def server_fn(context: Context):
     num_classes = context.run_config["num-classes"]
     num_features = context.run_config["num-features"]
     
+    # Auto-detect num_features from data if needed
+    from flower_app.task import _load_csv_data
+    data = _load_csv_data()
+    actual_num_features = data['num_features']
+    if actual_num_features != num_features:
+        print(f"⚠️  Config has {num_features} features, but data has {actual_num_features}")
+        print(f"   Using actual data features: {actual_num_features}")
+        num_features = actual_num_features
+    
     # Total rounds = federated + fine-tuning
     total_rounds = num_federated_rounds + fine_tuning_rounds
     
